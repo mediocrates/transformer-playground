@@ -70,13 +70,14 @@ class MultiHeadDecoderAttention(nn.Module):
 
 class Sublayer(nn.Module):
 
-    def __init__(self, layer):
+    def __init__(self, layer, p_dropout=0.1):
         super().__init__()
         self.layer = layer
+        self.dropout = nn.Dropout(p=p_dropout)
 
     def forward(self, x):
         norm = nn.LayerNorm(normalized_shape=x.shape[1:]).to(x.device)  # TODO (justin): confirm this
-        return norm(x + self.layer(x))
+        return norm(x + self.dropout(self.layer(x)))
 
 
 class FeedForward(nn.Module):

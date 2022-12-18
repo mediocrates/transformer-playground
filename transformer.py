@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 from torch import nn
 
@@ -36,7 +37,6 @@ class DecoderOnlyTransformer(nn.Module):
         self.embedding = nn.Embedding(num_embeddings=d_vocab, embedding_dim=d_model)
         self.pe = PositionalEncoding(d_model)
         self.decoders = DecoderStack(d_model, d_k, d_v, h, d_ff, n)
-        self.final = nn.Linear(d_model, d_vocab)
 
     def forward(self, tgt, src, delim_token=1):
         """
@@ -46,11 +46,14 @@ class DecoderOnlyTransformer(nn.Module):
             delim_token: character delimiting between source and target
         """
         bs = tgt.shape[0]
+        d_model = tgt.shape[-1]
         combined = torch.cat([tgt, torch.tensor([delim_token]).to(tgt.device).expand(bs, -1), src], dim=-1)
-        a = self.embedding(combined)
+        a = self.embedding(combined) * np.sqrt(d_model)
         a += self.pe.forward(a)
-        dec_out = self.decoders.forward(a)
-        return torch.softmax(self.final(dec_out), dim=-1).mean(dim=-2)
+        return torch.softmax(
+            self.embedding.weight.transpose(-2, -1) @ self.decoders(a),
+            dim=-1
+        ).mean(dim=-2)
 
     def predict(self, src=None, tgt=None, start_token=0, delim_token=1, end_token=2, max_len=50):
         device = next(self.parameters()).device
