@@ -21,12 +21,13 @@ def to_cpu(model):
 
 class PositionalEncoding(nn.Module):
 
-    def __init__(self, d_model):
+    def __init__(self, d_model, p_dropout=0.1):
         assert d_model % 2 == 0
         super().__init__()
         self.d_model = d_model
         i = 2 * torch.arange(self.d_model // 2, dtype=torch.float)
         self.base_row = 10000 ** (-i.unsqueeze(0) / self.d_model)
+        self.dropout = nn.Dropout(p_dropout)
 
     def forward(self, x):
         L = x.shape[-2]
@@ -34,7 +35,7 @@ class PositionalEncoding(nn.Module):
         half = cols * self.base_row.to(x.device)
         evens = torch.sin(half)
         odds = torch.cos(half)
-        return x + torch.stack([evens, odds], dim=-1).view(L, self.d_model)
+        return self.dropout(x + torch.stack([evens, odds], dim=-1).view(L, self.d_model))
 
 
 class DecoderSelfAttention(nn.Module):
@@ -51,8 +52,8 @@ class DecoderSelfAttention(nn.Module):
         Q = self.W_Q(x)
         K = self.W_K(x)
         V = self.W_V(x)
-        d_model = x.shape[-1]
-        A = Q @ K.transpose(-2, -1) / np.sqrt(d_model)
+        d_k = x.shape[-1]
+        A = Q @ K.transpose(-2, -1) / np.sqrt(d_k)
         A += torch.triu(torch.ones_like(A) * float("-inf"), diagonal=1)  # mask subsequent positions
         return torch.softmax(A, dim=-1) @ V
 
@@ -70,14 +71,14 @@ class MultiHeadDecoderAttention(nn.Module):
 
 class Sublayer(nn.Module):
 
-    def __init__(self, layer, p_dropout=0.1):
+    def __init__(self, layer, d_model, p_dropout=0.1):
         super().__init__()
         self.layer = layer
+        self.norm = nn.LayerNorm(d_model)
         self.dropout = nn.Dropout(p=p_dropout)
 
     def forward(self, x):
-        norm = nn.LayerNorm(normalized_shape=x.shape[1:]).to(x.device)  # TODO (justin): confirm this
-        return norm(x + self.dropout(self.layer(x)))
+        return self.norm(x + self.dropout(self.layer(x)))
 
 
 class FeedForward(nn.Module):

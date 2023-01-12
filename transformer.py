@@ -11,59 +11,56 @@ class Decoder(nn.Module):
         if d_v is None:
             d_v = d_k
         super().__init__()
-        self.self_attention = Sublayer(MultiHeadDecoderAttention(d_model, d_k, d_v, h), p_dropout=p_dropout)
-        self.ffn = Sublayer(FeedForward(d_model, d_ff), p_dropout=p_dropout)
+        self.self_attention = Sublayer(
+            MultiHeadDecoderAttention(d_model, d_k, d_v, h),
+            d_model=d_model,
+            p_dropout=p_dropout
+        )
+        self.ffn = Sublayer(
+            FeedForward(d_model, d_ff),
+            d_model=d_model,
+            p_dropout=p_dropout
+        )
 
     def forward(self, x):
         return self.ffn(self.self_attention(x))
 
 
-class DecoderStack(nn.Module):
-
-    def __init__(self, d_model, d_k, d_v, h, d_ff, n, p_dropout=0.1):
-        super().__init__()
-        self.decoders = nn.Sequential(*[Decoder(d_model, d_k, d_v, h, d_ff, p_dropout=p_dropout) for _ in range(n)])
-
-    def forward(self, x):
-        for decoder in self.decoders:
-            x = decoder(x)
-        return x
-
-
 class DecoderOnlyTransformer(nn.Module):
 
-    def __init__(self, d_vocab, d_model, d_k, d_v=None, h=8, d_ff=None, n=6, p_dropout=0.1):
+    def __init__(self, d_vocab, d_model, d_k, d_v=None, h=8, d_ff=None, n=12, p_dropout=0.1, tie_weights=False):
         super().__init__()
+        self.d_model = d_model
         self.embedding = nn.Embedding(num_embeddings=d_vocab, embedding_dim=d_model)
-        self.pe = PositionalEncoding(d_model)
-        self.decoders = DecoderStack(d_model, d_k, d_v, h, d_ff, n, p_dropout=p_dropout)
+        # torch.nn.init.xavier_uniform_(self.embedding.weight)
+        self.pe = PositionalEncoding(d_model, p_dropout=p_dropout)
+        self.decoders = nn.Sequential(*[Decoder(d_model, d_k, d_v, h, d_ff, p_dropout=p_dropout) for _ in range(n)])
+        self.final = nn.Linear(d_model, d_vocab)
 
-    def forward(self, tgt, src, delim_token=1):
-        """
-        Args:
-            tgt: desired output
-            src: input representation, if it exists
-            delim_token: character delimiting between source and target
-        """
-        bs = tgt.shape[0]
-        d_model = tgt.shape[-1]
-        combined = torch.cat([tgt, torch.tensor([delim_token]).to(tgt.device).expand(bs, -1), src], dim=-1)
+        # TODO (justin): this doesn't exactly work yet
+        self.tie_weights = tie_weights
+        if tie_weights:
+            self.embedding.weight = self.final.weight  # weight-tying
+
+    def forward(self, combined):
         a = self.embedding(combined)
+        if self.tie_weights:
+            a *= np.sqrt(3 * self.d_model)
         a += self.pe.forward(a)
-        return torch.softmax(
-            self.decoders(a).mean(dim=-2) @ self.embedding.weight.transpose(-2, -1) / np.sqrt(3 * d_model),
-            dim=-1
-        )
+        # self.decoders(a) @ self.embedding.weight.transpose(-2, -1) / np.sqrt(3 * d_model),
+        return self.final(self.decoders(a))
 
-    def predict(self, src=None, tgt=None, start_token=0, delim_token=1, end_token=2, max_len=50):
+    def predict(self, prompt=None, start_token=0, end_token=2, max_len=50):
         device = next(self.parameters()).device
-        if tgt is None:
-            tgt = torch.zeros(1, 1).fill_(start_token).to(torch.int64).to(device)
-        if src is None:
-            src = tgt
+        if prompt is not None:
+            combined = prompt
+        else:
+            combined = torch.zeros(1).fill_(start_token).to(torch.int64).to(device)
         pick = None
-        while pick != end_token and tgt.shape[-1] < max_len:
-            out = self.forward(tgt, src, delim_token=delim_token)
-            pick = out.argmax(dim=-1)
-            tgt = torch.cat([tgt, pick.unsqueeze(-1)], dim=-1)
-        return tgt
+        while pick != end_token and combined.shape[-1] < max_len:
+            self.eval()
+            out = self(combined.unsqueeze(0))
+            self.train()
+            pick = out[0, -1].argmax(dim=-1).unsqueeze(0)
+            combined = torch.cat([combined, pick], dim=-1)
+        return combined
